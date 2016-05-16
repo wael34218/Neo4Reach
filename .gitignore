@@ -1,0 +1,11 @@
+*.jar
+*.class
+*.swp
+.project
+.classpath
+.settings/
+neo4j-home/
+
+.DS_Store
+target/
+target/*
