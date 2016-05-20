@@ -43,6 +43,7 @@ public class IndexDB {
 			instance.loadIndex();
 		} else {
 			System.out.println("Instance already created");
+			instance.loadIndex();
 		}
 		return instance;
 	}
@@ -104,8 +105,7 @@ public class IndexDB {
 	// ////////////////////////////////////
 	// BuildSCC - Part 2
 	// ////////////////////////////////////
-	public static void buildSCC(GraphDatabaseService graphDb,
-			GraphDatabaseService indexDb) {
+	public static void buildSCC(GraphDatabaseService graphDb, GraphDatabaseService indexDb) {
 		// Formulate SCC using Kosaraju's algorithm
 		Hashtable<Long, Boolean> visited = new Hashtable<Long, Boolean>();
 		Stack<Node> scc_stack = new Stack<Node>();
@@ -152,6 +152,7 @@ public class IndexDB {
 					visited.put(node.getId(), true);
 
 					component.add(node);
+					node.setProperty("_scc_id", sccNode.getId());
 					instance.mapping.put(node.getId(), sccNode.getId());
 					Iterable<Relationship> rels = node
 							.getRelationships(Direction.INCOMING);
@@ -171,6 +172,7 @@ public class IndexDB {
 				scc.put(sccNode.getId(), component);
 			}
 			tindex.success();
+			tgraph.success();
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
@@ -188,28 +190,27 @@ public class IndexDB {
 				rel = relations.next();
 				startSccId = instance.mapping.get(rel.getStartNode().getId());
 				endSccId = instance.mapping.get(rel.getEndNode().getId());
-				if (!startSccId.equals(endSccId)
-						&& !added_relations.containsKey(startSccId + "-"
-								+ endSccId)) {
-					added_relations.put(startSccId + "-" + endSccId, true);
-
-					// Get Start SCC node
-					result = indexDb.execute("match (s) WHERE ID(s) = "
-							+ startSccId + " return s");
-					ResourceIterator<Node> startSccResults = result
-							.columnAs("s");
-					startScc = startSccResults.next();
-
-					// Get End SCC node
-					result = indexDb.execute("match (s) WHERE ID(s) = "
-							+ endSccId + " return s");
-					ResourceIterator<Node> endSccResults = result.columnAs("s");
-					endScc = endSccResults.next();
-
-					// Store Relation
-					Relationship relationship = startScc.createRelationshipTo(
-							endScc, rel.getType());
-					relationship.setProperty("message", "Some Information");
+				if (!startSccId.equals(endSccId)){
+					if(!added_relations.containsKey(startSccId + "-" + endSccId)) {
+						added_relations.put(startSccId + "-" + endSccId, true);
+	
+						// Get Start SCC node
+						result = indexDb.execute("match (s) WHERE ID(s) = " + startSccId + " return s");
+						ResourceIterator<Node> startSccResults = result.columnAs("s");
+						startScc = startSccResults.next();
+	
+						// Get End SCC node
+						result = indexDb.execute("match (s) WHERE ID(s) = " + endSccId + " return s");
+						ResourceIterator<Node> endSccResults = result.columnAs("s");
+						endScc = endSccResults.next();
+	
+						// Store Relation
+						Relationship relationship = startScc.createRelationshipTo(endScc, rel.getType());
+						relationship.setProperty("count", 1);
+					}else{
+						result = indexDb.execute("match (s)-[r]->(t) WHERE ID(s)=" + startSccId
+								+ " AND ID(t)=" + endSccId + " SET r.count=r.count+1");
+					}
 				}
 			}
 			tindex.success();
