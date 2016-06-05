@@ -1,4 +1,4 @@
-package org.neo4j.reach.unmanagedextension;
+
 
 import java.io.File;
 import java.util.ArrayList;
@@ -22,7 +22,7 @@ import org.neo4j.graphdb.Result;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.factory.GraphDatabaseFactory;
 
-public class IndexDB {
+public class ComplicatedIndexDB {
 	private static IndexDB instance = null;
 
 	public GraphDatabaseService connection;
@@ -41,7 +41,7 @@ public class IndexDB {
 	    REACH
 	}
 
-	protected IndexDB() {
+	protected ComplicatedIndexDB() {
 	}
 
 	public static IndexDB getInstance() {
@@ -153,7 +153,7 @@ public class IndexDB {
 	//////////////////////////////////////
 	// Add Node - Part 5.1
 	//////////////////////////////////////
-	public static void addNode(Set<Long> outgoing_relations, Set<Long> incoming_relations){
+	public static void addNode(ArrayList<Long> outgoing_relations, ArrayList<Long> incoming_relations){
 		Node v = instance.connection.createNode(SCC);
 		for(Long o : outgoing_relations){
 			v.createRelationshipTo(instance.getScc(o), RelTypes.REACH);
@@ -161,20 +161,208 @@ public class IndexDB {
 		for(Long i : outgoing_relations){
 			instance.getScc(i).createRelationshipTo(v, RelTypes.REACH);
 		}
-		decideVertixLevel(instance.connection);
-		butterfly(instance.connection);
 		
+		// Find order of the new node
+		// Step 1
+		result = instance.connection.execute("MATCH (n) RETURN MAX(n.order) AS o");
+		ResourceIterator<Long> count_query = result.columnAs("o");
+		Long initial_order = (Long) count_query.next() + 1;
+		v.setProperty("order", initial_order);
+		
+		// >>>>>> Implement Step 2.1
+		Hashtable<Long, Node> c_in = new Hashtable<Long, Node>();
+		Hashtable<Long, Node> c_out = new Hashtable<Long, Node>();
+		Set<Long> l_in = new HashSet<Long>();
+		Set<Long> l_out = new HashSet<Long>();
+		Set<Long> i_in = new HashSet<Long>();
+		Set<Long> i_out = new HashSet<Long>();
+		
+		for(Relationship r : v.getRelationships(Direction.INCOMING)){
+			Node u = r.getStartNode();
+			c_in.put((Long) u.getProperty("order"), u);
+			for(Long zi : fromString((String) u.getProperty("L_in"))){
+				Node scc = instance.getScc(zi);
+				c_in.put((Long) scc.getProperty("order"), scc);
+			}
+		}
+		
+		ArrayList<Long> order = new ArrayList<Long>(c_in.keySet());
+		Collections.sort(order);
+		for(Long o : order){
+			Node u = c_in.get(o);
+			Set<Long> u_l_out = fromString((String) u.getProperty("L_out"));
+			u_l_out.retainAll(l_in);
+			if(u_l_out.size() == 0){
+				if((Long) u.getProperty("order") < (Long) v.getProperty("order")){
+					l_in.add(u.getId());
+				} else {
+					i_out.add(u.getId());
+					u_l_out = fromString((String) u.getProperty("L_out"));
+					u_l_out.add(v.getId());
+					u.setProperty("L_out", u_l_out.toString());
+				}
+			}
+		}
+		
+		for(Relationship r : v.getRelationships(Direction.OUTGOING)){
+			Node u = r.getEndNode();
+			c_out.put((Long) u.getProperty("order"), u);
+			for(Long zi : fromString((String) u.getProperty("L_out"))){
+				Node scc = instance.getScc(zi);
+				c_out.put((Long) scc.getProperty("order"), scc);
+			}
+		}
+		
+		order = new ArrayList<Long>(c_out.keySet());
+		Collections.sort(order);
+		for(Long o : order){
+			Node u = c_out.get(o);
+			Set<Long> u_l_in = fromString((String) u.getProperty("L_in"));
+			u_l_in.retainAll(l_out);
+			if(u_l_in.size() == 0){
+				if((Long) u.getProperty("order") < (Long) v.getProperty("order")){
+					l_out.add(u.getId());
+				} else {
+					i_in.add(u.getId());
+					u_l_in = fromString((String) u.getProperty("L_in"));
+					u_l_in.add(v.getId());
+					u.setProperty("L_in", u_l_in.toString());
+				}
+			}
+		}
+		// <<<<<<<
+		result = instance.connection.execute("match (n) return n order by n.order desc");
+		ResourceIterator<Node> scc = result.columnAs("n");
+		while(scc.hasNext()){
+			Node u = scc.next();
+			Long delta_k = (long) 0;
+			if(l_in.contains(u.getId())){
+				l_in.remove(u.getId());
+				i_out.add(u.getId());
+				for(Long w : i_in){
+					// if(instance.getScc(w))
+				}
+			}
+		}
 	}
 	
 	//////////////////////////////////////
 	// Delete Node - Part 5.2
 	//////////////////////////////////////
 	public static void deleteNode(Node v){
+		Set<Long> i_in_temp = IndexDB.fromString((String) v.getProperty("I_in"));
+		Set<Long> l_in_temp;
+		for(Long i : i_in_temp){
+			Node x = instance.getScc(i);
+			l_in_temp = fromString((String) x.getProperty("L_in"));
+			l_in_temp.remove(v.getId());
+			x.setProperty("L_in", l_in_temp.toString());
+		}
+		
+		Set<Long> i_out_temp = IndexDB.fromString((String) v.getProperty("I_out"));
+		Set<Long> l_out_temp;
+		for(Long i : i_out_temp){
+			Node x = instance.getScc(i);
+			l_out_temp = fromString((String) x.getProperty("L_out"));
+			l_out_temp.remove(v.getId());
+			x.setProperty("L_out", l_out_temp.toString());
+		}
+		
+		
+		// Do the B+ BFS and fix the sets
+		Stack<Node> bfs_stack = new Stack<Node>();
+		ArrayList<Node> b_plus = new ArrayList<Node>();
+		bfs_stack.push(v);
+		while (!bfs_stack.empty()){
+			Node node = (Node) bfs_stack.pop();
+			for(Relationship r : node.getRelationships(Direction.OUTGOING)){
+				bfs_stack.push(r.getEndNode());
+				b_plus.add(r.getEndNode());
+			}
+		}
+		
+		for(Node u : b_plus){
+			Set<Node> neighbors_in = new HashSet<Node>();
+			for(Relationship r : u.getRelationships(Direction.INCOMING)){
+				neighbors_in.add(r.getStartNode());
+			}
+			
+			Hashtable<Long, Node> c_in = new Hashtable<Long, Node>();
+			for(Node z: neighbors_in){
+				c_in.put((Long) z.getProperty("order"), z);
+				for(Long zi : fromString((String) z.getProperty("L_in"))){
+					Node scc = instance.getScc(zi);
+					c_in.put((Long) scc.getProperty("order"), scc);
+				}
+			}
+			
+			ArrayList<Long> order = new ArrayList<Long>(c_in.keySet());
+			Collections.sort(order);
+			Set<Long> l_in = new HashSet<Long>();
+			for(Long o : order){
+				Node w = c_in.get(o);
+				if((Long) w.getProperty("order") < (Long) u.getProperty("order") && !instance.reachQuery(w, u)){
+					l_in.add(w.getId());
+					for(Long s_id : fromString((String) w.getProperty("I_out"))){
+						Node s =instance.getScc(s_id);
+						if( fromString((String) s.getProperty("L_out")).contains(u.getId()) ){
+							instance.removeNodeFromProperty(u.getId(), s, "L_out");
+						}
+					}
+				}
+			}
+			u.setProperty("L_in", l_in.toString());
+		}
+		
+		// Do the B- BFS and fix the sets
+		bfs_stack = new Stack<Node>();
+		ArrayList<Node> b_minus = new ArrayList<Node>();
+		bfs_stack.push(v);
+		while (!bfs_stack.empty()){
+			Node node = (Node) bfs_stack.pop();
+			for(Relationship r : node.getRelationships(Direction.INCOMING)){
+				bfs_stack.push(r.getStartNode());
+				b_minus.add(r.getStartNode());
+			}
+		}
+		
+		for(Node u : b_minus){
+			Set<Node> neighbors_out = new HashSet<Node>();
+			for(Relationship r : u.getRelationships(Direction.OUTGOING)){
+				neighbors_out.add(r.getEndNode());
+			}
+			
+			Hashtable<Long, Node> c_out = new Hashtable<Long, Node>();
+			for(Node z: neighbors_out){
+				c_out.put((Long) z.getProperty("order"), z);
+				for(Long zi : fromString((String) z.getProperty("L_out"))){
+					Node scc = instance.getScc(zi);
+					c_out.put((Long) scc.getProperty("order"), scc);
+				}
+			}
+			
+			ArrayList<Long> order = new ArrayList<Long>(c_out.keySet());
+			Collections.sort(order);
+			Set<Long> l_out = new HashSet<Long>();
+			for(Long o : order){
+				Node w = c_out.get(o);
+				if((Long) w.getProperty("order") < (Long) u.getProperty("order") && !instance.reachQuery(w, u)){
+					l_out.add(w.getId());
+					for(Long s_id : fromString((String) w.getProperty("I_in"))){
+						Node s =instance.getScc(s_id);
+						if( fromString((String) s.getProperty("L_in")).contains(u.getId()) ){
+							instance.removeNodeFromProperty(u.getId(), s, "L_in");
+						}
+					}
+				}
+			}
+			u.setProperty("L_out", l_out.toString());
+		}
+		
+		// Delete the node
 		Long order = (Long) v.getProperty("order");
 		instance.connection.execute("MATCH (s)-[r?]-() WHERE ID(s) = " + v.getId() + " DELETE r, s");
 		instance.connection.execute("MATCH (s) WHERE s.order > " + order + " SET s.order=s.order-1");
-		decideVertixLevel(instance.connection);
-		butterfly(instance.connection);
 	}
 	
 	public void createRelationship(Relationship r) {
@@ -195,11 +383,11 @@ public class IndexDB {
 						}
 						visited.put(node.getId(), true);
 						if(reachQuery(node, superScc)){
-								// 1- DAG: Add containing nodes from node -> superScc
-								// Maybe just remove containing array from nodes
-								// 2- Graph: update _scc_id of nodes in 'node' to SuperScc
-								// 3- RelationsSuper = RelationsSuper U RelationNode
-								// 4- Call function delete node
+							// 1- DAG: Add containing nodes from node -> superScc
+							// Maybe just remove containing array from nodes
+							// 2- Graph: update _scc_id of nodes in 'node' to SuperScc
+							// 3- RelationsSuper = RelationsSuper U RelationNode
+							// 4- Call function delete node
 							Iterable<Relationship> rels = node.getRelationships(Direction.OUTGOING);
 							for (Relationship rel : rels) {
 								dfs_stack.push(rel.getEndNode());
@@ -364,21 +552,17 @@ public class IndexDB {
 	// ////////////////////////////////////
 	// Decide Vertex Level - Part 7.1
 	// ////////////////////////////////////
-	private static void decideVertixLevel(GraphDatabaseService indexDb) {
+	private void decideVertixLevel(GraphDatabaseService indexDb) {
 		Long order_level = (long) 1;
-		S_out = new Hashtable<Long, Integer>();
-		S_in = new Hashtable<Long, Integer>();
-		Vorder = new Hashtable<Long, Boolean>();
 
 		try (Transaction tindex = indexDb.beginTx()) {
-			result = indexDb.execute("MATCH (n) RETURN count(n) as c");
+			result = indexDb.execute("MATCH (n) WHERE NOT EXISTS(n.order) RETURN count(n) as c");
 			ResourceIterator<Long> count_query = result.columnAs("c");
 			Long nodes_total = (Long) count_query.next();
 
 			while (order_level <= nodes_total) {
 				result = indexDb.execute("MATCH (n) RETURN n");
 				nodes = result.columnAs("n");
-				Long count = (long) 0;
 				while (nodes.hasNext()) {
 					Node node = nodes.next();
 					if (Vorder.containsKey(node.getId())) {
@@ -388,11 +572,8 @@ public class IndexDB {
 					}
 					findOut(node);
 					findIn(node);
-					count += 1;
 				}
-				
 				Long maxNodeID = findMax();
-				System.out.println(count);
 				result = indexDb.execute("MATCH (n) WHERE ID(n)=" + maxNodeID + " SET n.order=" + order_level);
 				Vorder.put(maxNodeID, true);
 				order_level++;
@@ -410,9 +591,6 @@ public class IndexDB {
 		float max_cost = -1;
 		float cost;
 		for (Long k : S_out.keySet()) {
-			if (Vorder.containsKey(k)) {
-				continue;
-			}
 			if (S_in.get(k) + S_out.get(k) == 0) {
 				cost = 0;
 			} else {
@@ -423,7 +601,6 @@ public class IndexDB {
 				max_cost = cost;
 			}
 		}
-		System.out.println(nodeID + " : " + max_cost);
 		return nodeID;
 	}
 
@@ -464,7 +641,7 @@ public class IndexDB {
 	// ////////////////////////////////////
 	// Butterfly - Part 7.2
 	// ////////////////////////////////////
-	public static void butterfly(GraphDatabaseService indexDb) {
+	public void butterfly(GraphDatabaseService indexDb) {
 		Hashtable<Long, Set<Long>> l_out = new Hashtable<Long, Set<Long>>();
 		Hashtable<Long, Set<Long>> l_in = new Hashtable<Long, Set<Long>>();
 		Hashtable<Long, Set<Long>> i_out = new Hashtable<Long, Set<Long>>();
