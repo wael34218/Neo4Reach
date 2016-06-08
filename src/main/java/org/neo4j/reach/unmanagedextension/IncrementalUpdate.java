@@ -10,22 +10,26 @@ public class IncrementalUpdate implements TransactionEventHandler<Object> {
 	
 	@Override
 	public void afterCommit(TransactionData data, Object arg1) {
-		System.out.println("-----Commmit-----");
-		// TODO Auto-generated method stub
+		System.out.println("-----After Commmit-----");
+		
+		for(Node n : data.createdNodes()){
+			IndexDB.createNode(n);
+		}
+		
 		for(Relationship r : data.createdRelationships()){
-			
+			System.out.println("1- Create Relationship");
+			IndexDB.createRelationship(r);
 		}
 		
 		for(Relationship r : data.deletedRelationships()){
-			
-		}
-		
-		for(Node n : data.createdNodes()){
-			
+			IndexDB.deleteRelationship(r);
 		}
 		
 		for(Node n : data.deletedNodes()){
-			
+			for(Relationship r : n.getRelationships()){
+				IndexDB.deleteRelationship(r);
+			}
+			IndexDB.deleteNode(n);
 		}
 	}
 

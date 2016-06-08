@@ -2,7 +2,6 @@ package org.neo4j.reach.unmanagedextension;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.LinkedList;
@@ -26,6 +25,7 @@ public class IndexDB {
 	private static IndexDB instance = null;
 
 	public GraphDatabaseService connection;
+	public GraphDatabaseService database;
 	public Hashtable<Long, Long> mapping = new Hashtable<Long, Long>();
 	static String index_path = "data/databases/reachindex";
 
@@ -55,6 +55,10 @@ public class IndexDB {
 			instance.loadIndex();
 		}
 		return instance;
+	}
+	
+	public void setDatabase(GraphDatabaseService database){
+		instance.database = database;
 	}
 
 	public void loadIndex() {
@@ -97,18 +101,7 @@ public class IndexDB {
 	public boolean reachQuery(Long si, Long ti){
 		Node startScc = getScc(si);
 		Node endScc = getScc(ti);
-
-		Set<Long> l_out_temp = IndexDB.fromString((String) startScc.getProperty("L_out"));
-		Set<Long> l_in_temp = IndexDB.fromString((String) endScc.getProperty("L_in"));
-		l_out_temp.add(startScc.getId());
-		l_in_temp.add(endScc.getId());
-
-		l_out_temp.retainAll(l_in_temp);
-		if(l_out_temp.size() > 0){
-			return true;
-		}else{
-			return false;
-		}
+		return reachQuery(startScc, endScc);
 	}
 	
 	public boolean reachQuery(Node startScc, Node endScc){
@@ -153,13 +146,19 @@ public class IndexDB {
 	//////////////////////////////////////
 	// Add Node - Part 5.1
 	//////////////////////////////////////
-	public static void addNode(Set<Long> outgoing_relations, Set<Long> incoming_relations){
-		Node v = instance.connection.createNode(SCC);
-		for(Long o : outgoing_relations){
-			v.createRelationshipTo(instance.getScc(o), RelTypes.REACH);
-		}
-		for(Long i : outgoing_relations){
-			instance.getScc(i).createRelationshipTo(v, RelTypes.REACH);
+	public static void addSCC(Set<Long> outgoing, Set<Long> incoming, Set<Long> containing){
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Node v = instance.connection.createNode(SCC);
+			for(Long o : outgoing){
+				v.createRelationshipTo(instance.getScc(o), RelTypes.REACH);
+			}
+			for(Long i : outgoing){
+				instance.getScc(i).createRelationshipTo(v, RelTypes.REACH);
+			}
+			v.setProperty("containing", containing.toString());
+			tindex.success();
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 		decideVertixLevel(instance.connection);
 		butterfly(instance.connection);
@@ -169,82 +168,194 @@ public class IndexDB {
 	//////////////////////////////////////
 	// Delete Node - Part 5.2
 	//////////////////////////////////////
-	public static void deleteNode(Node v){
-		Long order = (Long) v.getProperty("order");
-		instance.connection.execute("MATCH (s)-[r?]-() WHERE ID(s) = " + v.getId() + " DELETE r, s");
-		instance.connection.execute("MATCH (s) WHERE s.order > " + order + " SET s.order=s.order-1");
+	public static void deleteSCC(Node v){
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Long order = (Long) v.getProperty("order");
+			instance.connection.execute("MATCH (s)-[r?]-() WHERE ID(s) = " + v.getId() + " DELETE r, s");
+			instance.connection.execute("MATCH (s) WHERE s.order > " + order + " SET s.order=s.order-1");
+			tindex.success();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
 		decideVertixLevel(instance.connection);
 		butterfly(instance.connection);
 	}
 	
-	public void createRelationship(Relationship r) {
-		Long startSccId = mapping.get(r.getStartNode().getId());
-		Long endSccId = mapping.get(r.getEndNode().getId());
-		if (!startSccId.equals(endSccId)) {
-			try (Transaction tindex = connection.beginTx()) {
-				if(reachQuery(endSccId, startSccId)){
+	public static void createNode(Node n){
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Node v = instance.connection.createNode();
+			v.setProperty("L_in", new HashSet<Long>().toString());
+			v.setProperty("L_out", new HashSet<Long>().toString());
+			v.setProperty("I_in", new HashSet<Long>().toString());
+			v.setProperty("I_out", new HashSet<Long>().toString());
+			Set<Long> containing = new HashSet<Long>();
+			containing.add(n.getId());
+			v.setProperty("containing", containing.toString());
+			result = instance.connection.execute("MATCH (n) RETURN MAX(n.order) AS o");
+			ResourceIterator<Long> count_query = result.columnAs("o");
+			Long initial_order = (Long) count_query.next() + 1;
+			v.setProperty("order", initial_order);
+			tindex.success();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public static void deleteNode(Node n){
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Long SccId = (Long) n.getProperty("_scc_id");
+			Node scc = instance.getScc(SccId);
+			Long order = (long) scc.getProperty("order");
+			instance.connection.execute("MATCH (s) WHERE s.order > " + order + " SET s.order=s.order-1");
+			tindex.success();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	public static void deleteRelationship(Relationship r){
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Long startSccId = instance.mapping.get(r.getStartNode().getId());
+			Long endSccId = instance.mapping.get(r.getEndNode().getId());
+			if (startSccId.equals(endSccId)) {
+				boolean connected = false;
+				Stack<Node> dfs_stack = new Stack<Node>();
+				Hashtable<Long, Boolean> visited = new Hashtable<Long, Boolean>();
+				dfs_stack.push(instance.getScc(endSccId));
+				while (!dfs_stack.empty()){
+					Node node = (Node) dfs_stack.pop();
+					if (visited.containsKey(node.getId())) {
+						continue;
+					}
+					if(startSccId.equals(node.getId())){
+						connected = true;
+						break;
+					}
+					for(Relationship rel : node.getRelationships(Direction.OUTGOING)){
+						dfs_stack.push(rel.getEndNode());
+					}
+				}
+				if(!connected){
+					reIndex();
+				}
+			} else {
+				result = instance.connection.execute("MATCH (s)-[r]->(t) WHERE ID(s)=" + startSccId + " AND ID(t)=" + endSccId
+						+ " RETURN r LIMIT 1");
+				ResourceIterator<Relationship> answer = result.columnAs("r");
+				if (answer.hasNext()) {
+					Relationship edge = answer.next();
+					Long count = (Long) edge.getProperty("count");
+					if(count > 1){
+						edge.setProperty("count", count - 1);
+					}else if(count == 1){
+						edge.delete();
+					}else{
+						System.out.println("Edge with count less that 1!");
+					}
+					edge.setProperty("count", (Long) edge.getProperty("count") + (long) 1);
+				} else {
+					System.out.println("Edge does not exist in DAG!");
+				}
+			}
+			tindex.success();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	public static void createRelationship(Relationship r) {
+		try (Transaction tindex = instance.connection.beginTx(); Transaction tgraph = instance.database.beginTx()) {
+			Long startSccId = instance.mapping.get(r.getStartNode().getId());
+			Long endSccId = instance.mapping.get(r.getEndNode().getId());
+			if (!startSccId.equals(endSccId)) {
+				System.out.println("Case not same SCC : " + startSccId + " -> " + endSccId);
+				if(instance.reachQuery(endSccId, startSccId)){
+					System.out.println("They reach each other");
 					// Combine all paths into one SCC
 					Stack<Node> dfs_stack = new Stack<Node>();
 					Hashtable<Long, Boolean> visited = new Hashtable<Long, Boolean>();
-					dfs_stack.push(getScc(endSccId));
-					Node superScc = getScc(startSccId);
+					dfs_stack.push(instance.getScc(endSccId));
+					Node startScc = instance.getScc(startSccId);
+					Set<Long> outgoing = new HashSet<Long>();
+					Set<Long> incoming = new HashSet<Long>();
+					Set<Long> containing = new HashSet<Long>();
 					while (!dfs_stack.empty()){
 						Node node = (Node) dfs_stack.pop();
 						if (visited.containsKey(node.getId())) {
 							continue;
 						}
 						visited.put(node.getId(), true);
-						if(reachQuery(node, superScc)){
-								// 1- DAG: Add containing nodes from node -> superScc
-								// Maybe just remove containing array from nodes
-								// 2- Graph: update _scc_id of nodes in 'node' to SuperScc
-								// 3- RelationsSuper = RelationsSuper U RelationNode
-								// 4- Call function delete node
-							Iterable<Relationship> rels = node.getRelationships(Direction.OUTGOING);
-							for (Relationship rel : rels) {
+						if(instance.reachQuery(node, startScc)){
+							if(startSccId.equals(node.getId())){
+								continue;
+							}
+							containing.addAll(fromString((String) startScc.getProperty("containing")));
+							for(Relationship rel : node.getRelationships(Direction.OUTGOING)){
+								outgoing.add(rel.getEndNode().getId());
 								dfs_stack.push(rel.getEndNode());
 							}
+							for(Relationship rel : node.getRelationships(Direction.INCOMING)){
+								incoming.add(rel.getEndNode().getId());
+							}
+							System.out.println("Delete SCC "+node.getId());
+							deleteSCC(node);
 						}
-						// Create new node on DAG with relations Rsuper
-						// Call function CreateNode relations = RelationsSuper
-						// Step 1: Find its order
-						// Step 2: Fix Lin and Lout for all nodes
-						// Step 3: Reorder all nodes
+					}
+					if(!containing.isEmpty()){
+						System.out.println("Build new SCC");
+						containing.addAll(fromString((String) startScc.getProperty("containing")));
+						for(Relationship rel : startScc.getRelationships(Direction.OUTGOING)){
+							outgoing.add(rel.getEndNode().getId());
+						}
+						for(Relationship rel : startScc.getRelationships(Direction.INCOMING)){
+							incoming.add(rel.getEndNode().getId());
+						}
+						deleteSCC(startScc);
+						System.out.println("Add SCC node");
+						addSCC(outgoing, incoming, containing);
 					}
 				}else{
-					result = connection.execute("MATCH (s)-[r]->(t) WHERE ID(s)=" + startSccId + " AND ID(t)=" + endSccId
+					System.out.println("They CANNOT reach each other");
+					result = instance.connection.execute("MATCH (s)-[r]->(t) WHERE ID(s)=" + startSccId + " AND ID(t)=" + endSccId
 							+ " RETURN r LIMIT 1");
 					ResourceIterator<Relationship> answer = result.columnAs("r");
 					if (answer.hasNext()) {
+						
 						Relationship edge = answer.next();
-						edge.setProperty("count", (Long) edge.getProperty("count") + 1);
+						System.out.println("Increment existing edge : " + edge.getProperty("count"));
+						int count = (Integer) edge.getProperty("count") + 1;
+						edge.setProperty("count", count);
 					} else {
-						Node startScc = getScc(startSccId);
-						Node endScc = getScc(endSccId);
+						System.out.println("Add new edge");
+						Node startScc = instance.getScc(startSccId);
+						Node endScc = instance.getScc(endSccId);
 						Relationship edge = startScc.createRelationshipTo(endScc, RelTypes.REACH);
 						edge.setProperty("count", 1);
+						decideVertixLevel(instance.connection);
+						butterfly(instance.connection);
+						instance.loadIndex();
 					}
 				}
 				tindex.success();
-			} catch (Exception e) {
-				e.printStackTrace();
 			}
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
 	}
 
 	/////////////////////////////////////////////////////////////////
 	///////////////// ReIndex
 	/////////////////////////////////////////////////////////////////
-	public void reIndex(GraphDatabaseService database) {
-		connection.shutdown();
+	public static void reIndex() {
+		instance.connection.shutdown();
 		GraphDatabaseService indexDb = new GraphDatabaseFactory().newEmbeddedDatabase(new File(index_path));
-		buildSCC(database, indexDb);
+		buildSCC(instance.database, indexDb);
 		decideVertixLevel(indexDb);
 		butterfly(indexDb);
 		System.out.println("Indexing done.");
 		indexDb.shutdown();
-		this.connection = new GraphDatabaseFactory().newEmbeddedDatabase(new File(index_path));
-		this.loadIndex();
+		instance.connection = new GraphDatabaseFactory().newEmbeddedDatabase(new File(index_path));
+		instance.loadIndex();
 	}
 
 	// ////////////////////////////////////
@@ -521,6 +632,7 @@ public class IndexDB {
 				}
 
 				// Update L_in
+				System.out.println("---- bplus : " + b_plus.size());
 				for (Node u : b_plus) {
 					Set<Long> l_out_temp = new HashSet<Long>();
 					Set<Long> l_in_temp = new HashSet<Long>();
@@ -540,6 +652,7 @@ public class IndexDB {
 				}
 
 				// Update L_out
+				System.out.println("---- BMINUS : " + b_minus.size());
 				for (Node u : b_minus) {
 					Set<Long> l_out_temp = new HashSet<Long>();
 					Set<Long> l_in_temp = new HashSet<Long>();

@@ -27,8 +27,9 @@ public class MyService {
 		this.database = database;
 		new IndexDB();
 		this.indexDb = IndexDB.getInstance();
+		indexDb.setDatabase(database);
 		if (indexDb.empty()) {
-			indexDb.reIndex(database);
+			IndexDB.reIndex();
 		}
 		this.database.registerTransactionEventHandler(new IncrementalUpdate());
 	}
@@ -62,6 +63,20 @@ public class MyService {
 			res = "true\n";
 		}
 		return res;
+	}
+	
+	@GET
+	@Path("/get_scc/{s}")
+	public String getScc(@PathParam("s") Long s) {
+		Long si = indexDb.mapping.get(s);
+		return si+"\n";
+	}
+	
+	@GET
+	@Path("/create_index")
+	public String createIndex() {
+		IndexDB.reIndex();
+		return "Done\n";
 	}
 
 	@GET

@@ -26,4 +26,6 @@ You could also compare it with reachability query without using the index using:
 
 This work is based on:
 
-Zhu, Andy Diwen, et al. "Reachability queries on large dynamic graphs: a total order approach." Proceedings of the 2014 ACM SIGMOD international conference on Management of data. ACM, 2014.
+1. Zhu, Andy Diwen, et al. "Reachability queries on large dynamic graphs: a total order approach." Proceedings of the 2014 ACM SIGMOD international conference on Management of data. ACM, 2014.
+
+2. Yildirim, Hilmi, Vineet Chaoji, and Mohammed J. Zaki. "Dagger: A scalable index for reachability queries in large dynamic graphs." arXiv preprint arXiv:1301.0977 (2013).
