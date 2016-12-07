@@ -107,10 +107,13 @@ public class IndexDB {
 	public boolean reachQuery(Node startScc, Node endScc){
 		Set<Long> l_out_temp = IndexDB.fromString((String) startScc.getProperty("L_out"));
 		Set<Long> l_in_temp = IndexDB.fromString((String) endScc.getProperty("L_in"));
+		System.out.println("SCC Source Lout: "+ l_out_temp);
+		System.out.println("SCC Target Lin: "+ l_in_temp);
 		l_out_temp.add(startScc.getId());
 		l_in_temp.add(endScc.getId());
 
 		l_out_temp.retainAll(l_in_temp);
+		System.out.println(" ==> "+ l_out_temp);
 		if(l_out_temp.size() > 0){
 			return true;
 		}else{

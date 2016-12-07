@@ -49,18 +49,72 @@ public class MyService {
 			return "false\n";
 		}
 	}
+	
+	@GET
+	@Path("/cache/source/{s}/target/{t}")
+	public String cacheIndexReachability(@PathParam("s") Long s,
+			@PathParam("t") Long t) {
+		Long si = indexDb.mapping.get(s);
+		Long ti = indexDb.mapping.get(t);
+		
+		System.out.println("Source "+s+" source SCC "+si+" | Target "+t+" target SCC "+ti);
+		Node startScc = null;
+		Node endScc = null;
+
+		// Get Start SCC node
+		try {
+			result = indexDb.connection.execute("match (s) WHERE ID(s) = " + si
+					+ " return s");
+			ResourceIterator<Node> startSccResults = result.columnAs("s");
+			startScc = startSccResults.next();
+		} catch (RuntimeException e) {
+			return "Source: " + s + " ==> " + si + " NOT FOUND";
+		}
+
+		// Get End SCC node
+		try {
+			result = indexDb.connection.execute("match (t) WHERE ID(t) = " + ti
+					+ " return t");
+			ResourceIterator<Node> endSccResults = result.columnAs("t");
+			endScc = endSccResults.next();
+		} catch (RuntimeException e) {
+			return "Target: " + t + " ==> " + ti + " NOT FOUND";
+		}
+
+		Set<Long> l_out_temp = IndexDB.fromString((String) startScc
+				.getProperty("L_out"));
+		Set<Long> l_in_temp = IndexDB.fromString((String) endScc
+				.getProperty("L_in"));
+		
+		System.out.println("SCC Source Lout: "+ l_out_temp);
+		System.out.println("SCC Target Lin: "+ l_in_temp);
+		
+		l_out_temp.add(startScc.getId());
+		l_in_temp.add(endScc.getId());
+
+		l_out_temp.retainAll(l_in_temp);
+
+		String res;
+		System.out.println(" ==> "+ l_out_temp);
+		if (l_out_temp.size() == 0) {
+			res = "false\n";
+		} else {
+			res = "true\n";
+		}
+		return res;
+	}
 
 	@GET
 	@Path("/source/{s}/target/{t}")
 	public String indexReachability(@PathParam("s") Long s, @PathParam("t") Long t) {
 		Long si = indexDb.mapping.get(s);
 		Long ti = indexDb.mapping.get(t);
-		
+		System.out.println("Source "+s+" source SCC "+si+" | Target "+t+" target SCC "+ti);
 		String res;
 		if (indexDb.reachQuery(si, ti)) {
-			res = "false\n";
-		} else {
 			res = "true\n";
+		} else {
+			res = "false\n";
 		}
 		return res;
 	}
